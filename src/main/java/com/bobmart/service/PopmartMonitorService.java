@@ -1,42 +1,54 @@
 package com.bobmart.service;
 
+import com.bobmart.BobmartApplication;
+import com.bobmart.model.PopmartSet;
 import io.github.bonigarcia.wdm.WebDriverManager;
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.openqa.selenium.*;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
 import org.openqa.selenium.support.ui.ExpectedConditions;
 import org.openqa.selenium.support.ui.WebDriverWait;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.stereotype.Service;
+import org.springframework.context.event.EventListener;
 
 import java.io.File;
 import java.time.Duration;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Set;
+import java.time.LocalDateTime;
+import java.util.*;
 
 @Slf4j
 @Service
 public class PopmartMonitorService {
     private final WebDriver driver;
     private final WebDriverWait wait;
-    private static final Duration TIMEOUT = Duration.ofSeconds(10);
+    private static final Duration TIMEOUT = Duration.ofSeconds(5);
     private static final Duration RESERVATION_TIMEOUT = Duration.ofMinutes(5);
-    private static final int MAX_CART_SIZE = 10;
+    private static final int MAX_CART_SIZE = 16;
 
-    @Value("${popmart.username}")
-    private String username;
+    @Value("${selenium.refresh.interval}")
+    private int timer;
 
-    @Value("${popmart.password}")
-    private String password;
+    NotificationService notificationService;
 
-    public PopmartMonitorService() {
-        log.info("Initializing PopmartMonitorService");
+    public PopmartMonitorService(NotificationService notificationService) {
+        log.info("Initializing BobmartMonitorService");
+        this.notificationService = notificationService;
+
         WebDriverManager.chromedriver().setup();
         
         ChromeOptions options = new ChromeOptions();
-        //options.addArguments("--headless=new");
+        
+        // Create a unique user data directory for automation
+        String userDataDir = System.getProperty("user.home") + File.separator + "bobmart_chrome_profile";
+        options.addArguments("--user-data-dir=" + userDataDir);
+        options.addArguments("--profile-directory=Default");
+        
+        // Basic options
         options.addArguments("--start-maximized");
         options.addArguments("--disable-notifications");
         options.addArguments("--disable-popup-blocking");
@@ -46,184 +58,143 @@ public class PopmartMonitorService {
         options.addArguments("--no-sandbox");
         options.addArguments("--disable-dev-shm-usage");
         options.addArguments("--remote-allow-origins=*");
-        options.addArguments("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36");
+        
+        // Stealth options
+        options.addArguments("--disable-blink-features=AutomationControlled");
+        options.setExperimentalOption("excludeSwitches", Arrays.asList("enable-automation"));
         options.setExperimentalOption("useAutomationExtension", false);
-
+        
+        // Set user agent
+        options.addArguments("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36");
+        
+        // Additional preferences
+        Map<String, Object> prefs = new HashMap<>();
+        prefs.put("profile.default_content_setting_values.notifications", 2);
+        prefs.put("credentials_enable_service", false);
+        prefs.put("profile.password_manager_enabled", false);
+        options.setExperimentalOption("prefs", prefs);
 
         this.driver = new ChromeDriver(options);
         this.wait = new WebDriverWait(driver, TIMEOUT);
-        log.info("PopmartMonitorService initialized successfully");
+        log.info("BobmartMonitorService initialized successfully");
     }
 
-//    public void monitorSets(List<PopmartSet> sets) {
-//        try {
-//            int currentCartSize = getCartSize();
-//            log.info("Current cart size: {}", currentCartSize);
-//
-//            if (currentCartSize >= MAX_CART_SIZE) {
-//                log.info("Cart size limit reached ({}), stopping monitoring", currentCartSize);
-//                return;
-//            }
-//
-//            for (PopmartSet set : sets) {
-//                if (!set.isMonitored()) {
-//                    continue;
-//                }
-//
-//                try {
-//                    driver.get(set.getUrl());
-//
-//                    List<WebElement> buyButtons = wait.until(ExpectedConditions.presenceOfAllElementsLocatedBy(
-//                        By.xpath("//button[contains(., 'Buy Multiple Boxes')]")));
-//
-//                    if (buyButtons.isEmpty()) {
-//                        log.info("Set {} is out of stock", set.getName());
-//                        continue;
-//                    }
-//
-//                    if (addToCart(set)) {
-//                        log.info("Successfully added {} to cart", set.getName());
-//                        break;
-//                    }
-//                } catch (Exception e) {
-//                    log.error("Error monitoring set {}: {}", set.getName(), e.getMessage());
-//                }
-//            }
-//        } catch (Exception e) {
-//            log.error("Error during monitoring: {}", e.getMessage());
-//        }
-//    }
+    @EventListener(ApplicationReadyEvent.class)
+    public void monitorSets() throws InterruptedException {
+        List<PopmartSet> sets = new ArrayList<>();
 
-    private int getCartSize() {
-        try {
-            driver.get("https://www.popmart.com/us/cart");
-            List<WebElement> cartItems = wait.until(ExpectedConditions.presenceOfAllElementsLocatedBy(
-                By.cssSelector(".cart-item")));
-            log.info("Found {} items in cart", cartItems.size());
-            return cartItems.size();
-        } catch (Exception e) {
-            log.error("Error getting cart size: {}", e.getMessage());
-            return 0;
-        }
-    }
+        sets.add(new PopmartSet("195"));
 
-//    private boolean addToCart(PopmartSet set) {
-//        try {
-//            log.info("Adding {} to cart", set.getName());
-//            WebElement buyButton = wait.until(ExpectedConditions.elementToBeClickable(
-//                By.xpath("//button[contains(., 'Buy Multiple Boxes')]")));
-//            buyButton.click();
-//
-//            WebElement quantityInput = wait.until(ExpectedConditions.presenceOfElementLocated(
-//                By.cssSelector("input[type='number']")));
-//            quantityInput.clear();
-//            quantityInput.sendKeys(String.valueOf(set.getTargetQuantity()));
-//
-//            WebElement addToCartButton = wait.until(ExpectedConditions.elementToBeClickable(
-//                By.xpath("//button[contains(., 'Add to Cart')]")));
-//            addToCartButton.click();
-//
-//            return true;
-//        } catch (Exception e) {
-//            log.error("Error adding {} to cart: {}", set.getName(), e.getMessage());
-//            return false;
-//        }
-//    }
 
-    public void refreshReservationTimer() {
-        try {
-            log.info("Starting reservation timer refresh loop");
-            while (true) {
-                driver.get("https://www.popmart.com/us/cart");
-                
-                WebElement checkoutButton = wait.until(ExpectedConditions.elementToBeClickable(
-                    By.xpath("//button[contains(., 'Checkout')]")));
-                checkoutButton.click();
-                
-                Thread.sleep(1000);
-                
-                driver.get("https://www.popmart.com/us/cart");
-                
-                Thread.sleep(Duration.ofMinutes(4).toMillis());
+        int count =0;
+        boolean runFlag= true;
+        while (runFlag) {
+            for (PopmartSet set : sets){
+                try {
+                    log.info("starting checking for set {}",set.getName());
+                    driver.get(set.getUrl());
+
+                    List<WebElement> buyButtons = wait.until(ExpectedConditions.presenceOfAllElementsLocatedBy(
+                            By.xpath("//button[contains(., 'Buy Multiple Boxes')]")));
+
+                    log.info("[IMPORTANT]: Set {} is currently open. Attemping Count(Max 10) is {} ",set.getName(), count);
+                    notificationService.sendStockNotification(set.getName(),count);
+                    sets=new ArrayList<>(List.of(set));
+                    count++;
+                    if (addToCart(set)) {
+                        log.info("Successfully added {} to cart", set.getName());
+                    }else {
+                        log.info("[IMPORTANT]: Attemping {} FAILED adding {} to cart", set.getName());
+                    }
+                    if (count>10) runFlag=false;
+                } catch (NoSuchWindowException e){
+                    log.error("Chrome Window Killed, FETA ERROR, app stopped.");
+                   System.exit(1);
+                }catch (Exception e){
+                    log.info("Stock NotYet Refilled for Set {}",set.getName());
+                }
             }
-        } catch (InterruptedException e) {
-            log.info("Reservation timer refresh loop ended");
-        } catch (Exception e) {
-            log.error("Error refreshing reservation timer: {}", e.getMessage());
         }
+        log.info( "[IMPORTANT]: have tried 10 times to add to cart, now process to reservation time reset logic");
+        refreshReservationTimer();
     }
 
-    public void close() {
-        if (driver != null) {
-            driver.quit();
-            log.info("Browser closed");
-        }
-    }
-
-    public void fullLogic() {
-        bobmartLogin();
-    }
-
-    private boolean bobmartLogin() {
+    private boolean addToCart(PopmartSet set) {
         try {
-            log.info("Starting login process");
-            driver.get("https://www.popmart.com/us/user/login");
 
-            handlePop();
+            WebElement boxNumber = driver.findElement(By.xpath("//div[contains(@class, 'index_boxNumber')]"));
+            String content = boxNumber.getText();
 
-            // Wait for the email input field
-            log.info("Waiting for email input");
-            WebElement emailInput = wait.until(ExpectedConditions.presenceOfElementLocated(
-                    By.cssSelector("input[id='email']")));
-            log.info("Entering email: {}", username);
-            emailInput.sendKeys(username);
+            WebElement buyButton = driver.findElement(
+                By.xpath("//button[contains(., 'Buy Multiple Boxes')]"));
+            buyButton.click();
 
-            log.info("Looking for login button");
-            WebElement loginUserButton = wait.until(ExpectedConditions.elementToBeClickable(
-                    By.xpath("//button[contains(., 'CONTINUE')]")));
-            log.info("Clicking login button");
-            loginUserButton.click();
+            addGap(1000);
+            WebElement checkbox = driver.findElement(By.xpath("//label[contains(@class, 'index_selectAll')]//input[@type='checkbox']"));
+            checkbox.click();
+            addGap(1000);
 
-            // Wait for the password input field
-            log.info("Waiting for password input");
-            WebElement passwordInput = wait.until(ExpectedConditions.presenceOfElementLocated(
-                    By.cssSelector("input[id='password']")));
-            log.info("Entering password");
-            passwordInput.sendKeys(password);
+            WebElement priceElement = driver.findElement(By.xpath("//div[contains(@class, 'index_price')]"));
 
-            // Click the login button
-            log.info("Looking for login button");
-            WebElement loginButton = wait.until(ExpectedConditions.elementToBeClickable(
-                    By.xpath("//button[contains(., 'SIGN IN')]")));
-            log.info("Clicking login button");
-            loginButton.click();
+            WebElement addToCartButton = driver.findElement(
+                        By.xpath("//button[contains(., 'ADD TO BAG')]"));
+            addToCartButton.click();
+            addGap(1000);
+            log.info("add box num {} of set {} for {} dollars", content, set.getName(), priceElement.getText());
 
-
-            System.exit(1);
-            // Wait for login to complete and redirect to account page
-            log.info("Waiting for redirect to account page");
-            wait.until(ExpectedConditions.urlContains("popmart.com/us/account"));
-
-            log.info("Successfully logged in to Popmart");
             return true;
         } catch (Exception e) {
-            log.error("Failed to log in to Popmart", e);
+            log.error("Error adding {} to cart: {}", set.getName(), e.getMessage());
             return false;
         }
     }
+    public void refreshReservationTimer() throws InterruptedException {
+        int count =0 ;
+        log.info("Starting reservation timer refresh loop");
+        addGap(10000);
+        while (true) {
+            try {
+                log.info("try refreshReservationTimer, count is {} ",count);
+                driver.get("https://www.popmart.com/us/largeShoppingCart");
 
-    private void handlePop() {
-        // Handle cookie consent popup
-        try {
-            log.info("Looking for cookie consent popup");
-            WebElement acceptButton = wait.until(ExpectedConditions.elementToBeClickable(
-                    By.xpath("//div[contains(@class, 'policy_accept')]")));
+                WebElement tab = wait.until(ExpectedConditions.elementToBeClickable(
+                        By.xpath("//div[contains(text(), 'POP NOW')]")));
+                addGap(2000);
+                tab = wait.until(ExpectedConditions.elementToBeClickable(
+                        By.xpath("//div[contains(text(), 'POP NOW')]")));
+                String numbericCartSize = tab.getText().replaceAll("[^0-9.]", "");
+                log.info("Cart size is currently read as : {} ",numbericCartSize);
+                tab.click();
+                addGap(2000);
+                if (Integer.parseInt(numbericCartSize)>0){
 
-            log.info("Cookie consent accepted");
-            acceptButton.click();
-        } catch (Exception e) {
-            log.info("No cookie consent popup found or already accepted");
+                    WebElement checkbox = driver.findElement(By.xpath("//div[contains(text(), 'Select all')]"));
+                    checkbox.click();
+                    addGap(1000);
+
+                    WebElement checkOutButton = driver.findElement(
+                            By.xpath("//button[contains(., 'Confirm and Check out')]"));
+                    checkOutButton.click();
+
+                    addGap(5000);
+                }else {
+                    log.error("Cart Size read as 0, current count value(should be 0 as well) is :{} ", count);
+                    log.error("[IMPORTANT]: GG! This is a BIG FAIL, GOT NOTHING YOU MOTHER FCKER!!");
+                    System.exit(1);
+                }
+                driver.get("https://www.popmart.com/us/largeShoppingCart");
+
+                log.info("Refresh Succ, current reservation time is : {} ");
+
+            } catch (Exception e) {
+                log.error("Error refreshing reservation timer: {}", e.getMessage());
+
+            }
+            addGap(120000);
+            count++;
         }
     }
-
+    private void addGap(int timer) throws InterruptedException {
+        Thread.sleep(timer);
+    }
 }
